@@ -1,0 +1,279 @@
+---
+title: "Quick Analysis"
+author: " "
+date: "`r format(Sys.time(), '%d/%m/%y')`"
+output: html_document
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(tidytext)
+library(stopwords)
+library(wordcloud)
+library(RColorBrewer)
+library(plotly)
+library(topicmodels)
+library(corrplot)
+ 
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Loading datasets
+if (file.exists("text/text_1.txt")){
+  text_1 <- read.delim("text/text_1.txt", col.names=c("text"), stringsAsFactors = FALSE)%>% 
+    mutate(linenumber = row_number(),
+           book = 1)%>%
+    mutate(color = "#F8766D")
+}else{
+  text_1 <- data.frame(matrix(ncol = 3, nrow = 0))
+  x <- c("text")
+  colnames(text_1) <- x
+}
+
+if (file.exists("text/text_2.txt")){
+  text_2 <- read.delim("text/text_2.txt", col.names=c("text"), stringsAsFactors = FALSE)%>% 
+    mutate(linenumber = row_number(),
+           book = 2)%>%
+    mutate(color = "#00BFC4")
+}else{
+  text_2 <- data.frame(matrix(ncol = 3, nrow = 0))
+  x <- c("text")
+  colnames(text_2) <- x
+}
+
+if (file.exists("text/text_3.txt")){
+  text_3 <- read.delim("text/text_2.txt", col.names=c("text"), stringsAsFactors = FALSE)%>% 
+    mutate(linenumber = row_number(),
+           book = 3)%>%
+    mutate(color = "#7A5C58")
+}else{
+  text_3 <- data.frame(matrix(ncol = 3, nrow = 0))
+  x <- c("text")
+  colnames(text_3) <- x
+}
+
+dataset_raw <- text_1 %>%
+  rbind(text_2) %>%
+  rbind(text_3)
+
+prepare_data <- function(data){
+  if (nrow(data) == 0){
+    data
+  }else{
+    data %>% 
+      unnest_tokens(word, text) %>% 
+      anti_join(stop_words)}}
+
+dataset_1 <- prepare_data(text_1)
+dataset_2 <- prepare_data(text_2)
+dataset_3 <- prepare_data(text_3)
+
+dataset_unnested <- dataset_1 %>%
+  rbind(dataset_2) %>%
+  rbind(dataset_3)
+```
+
+ 
+
+# Text mining
+
+##### Frequency analysis with wordcloud 
+This is a wordcloud, a collection, or cluster, of words depicted in different sizes. The biggest and boldest the word appears, the more often it's mentioned within a given text. The documents are divided per color: <span style="color: #F8766D;">text_1</span>, <span style="color: #00BFC4;">text_2</span> and <span style="color: #7A5C58;">text_3</span>.\n
+
+```{r wordcloud_words, echo=FALSE, collapse=TRUE, warning=FALSE}
+words_for_cloud <- dataset_unnested %>%
+  count(word, book, color, sort = TRUE) 
+
+wordcloud(words = words_for_cloud$word, freq = words_for_cloud$n, min.freq = 60,
+          max.words = 200, random.order = FALSE, random.color = FALSE, rot.per = 0.35, 
+          colors = (words_for_cloud$color), ordered.colors = TRUE)
+```
+
+
+##### Bigrams analysis 
+In this case I consider bigrams. This is a plot which each point corrispondes to a bigram (you can check which of them hovering with mouse). \n
+
+```{r most_used_bigrams, echo=FALSE,  include=FALSE, collapse=TRUE, warning=FALSE}
+dataset_counts_dataset <- dataset_raw %>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+  count(bigram, book, color, sort = TRUE) %>%
+  filter(n > 3) %>% #bigrams with at least 4 occurrences, in order to have lighter graphic
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)  %>%
+  na.omit() %>%
+  unite("bigram", word1, word2, sep = " ") 
+
+
+p <- dataset_counts_dataset %>%
+  ggplot(aes(book, n, color = color,
+             text = paste0("Bigram: ", bigram,
+                           "\n Occurrences: ", n))) +
+  geom_point(position = position_jitter(width = 0.48)) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  labs(x = "Text",
+        y = "# of bigrams") +
+  scale_color_manual(values = c("#00BFC4", "#F8766D", "#7A5C58")) 
+```
+```{r plot_bigrams, echo=FALSE, collapse=TRUE, warning=FALSE}
+font = list(
+  size = 15,
+  color = "white"
+)
+
+label = list(
+  bordercolor = "transparent",
+  font = font
+)
+ggplotly(p, tooltip = c("text")) %>%
+  config(displayModeBar = FALSE) %>%
+  style(hoverlabel = label) %>%
+  layout(font = font,
+         yaxis = list(fixedrange = TRUE),
+         xaxis = list(fixedrange = TRUE))
+```
+
+
+
+##### Correlation between the dataset, how these dataset are related?
+This is a correlation matrix. Below is reported the correlation between the texts. The possible values are in [-1,+1], in particular: \n
+
++ +1 means high positive correlation 
++ 0 means no correlation 
++ -1 negative correlation 
+
+```{r corrplot, echo=FALSE, warning=FALSE}
+frequency <- dataset_unnested %>%
+  count(book, word, sort = TRUE) %>%
+  group_by(book) %>%
+  mutate(proportion = n / sum(n)) %>% 
+  select(-n) %>% 
+  spread(book, proportion) 
+
+frequency_matrix <- cor(frequency[, c(-1)], use = "pairwise.complete.obs") %>%
+  corrplot(method = "number")
+```
+
+
+# Sentiment analysis
+
+##### Sentiment anlysis 
+The sentiments are ranked basing on the sum of the words linked to that sentiment. I use colors to highlight <span style="color: #FE6D73;">negative</span> and <span style="color: #ADF7B6;">positive</span> sentiments. 
+```{r sentiments_in_the_text_n, echo=FALSE, collapse=TRUE, include=FALSE}
+dataset_sentiment <- dataset_unnested %>% 
+  inner_join(get_sentiments("nrc")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  arrange(sentiment) 
+dataset_sentiment <- aggregate(n ~ sentiment, dataset_sentiment,  sum)
+
+
+dataset_sentiment_words <- dataset_unnested %>% 
+  inner_join(get_sentiments("nrc")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  group_by(sentiment) %>%
+  slice(2:2) %>% #second word is more significant
+  select(word, sentiment)
+
+
+dataset_counts <- dataset_sentiment %>% 
+  full_join(dataset_sentiment_words) %>%
+  mutate(isPositive = (sentiment == "trust" | sentiment == "surprise" | sentiment == "positive" | sentiment == "joy")) %>%
+  filter(sentiment != "positive", sentiment != "negative") %>%
+  mutate(sentiment = reorder(sentiment, n)) %>%
+  arrange(desc(n))
+dataset_counts
+
+p <- dataset_counts %>%
+  ggplot(aes(sentiment, n, fill = isPositive,
+             text = paste0("Most used word: ", word,
+                           "\nOccurences: ", n,
+                           "\nSentiment: ", sentiment))) +
+  geom_col(show.legend = FALSE) +
+  theme_classic() +
+  scale_fill_manual(values = c("#FE6D73", "#ADF7B6")) +
+  labs(x = "Sentiment\n\n", y = "# of occurences of that words") +
+  theme(legend.position = "none",
+        text = element_text(family = "Arial"),
+        plot.title = element_text(hjust = 0.5)) +
+  coord_flip() 
+```
+```{r sentiments_in_the_text_nplot, echo=FALSE, collapse=TRUE, warning=FALSE}
+font = list(
+  size = 15,
+  color = "white"
+)
+
+label = list(
+  bordercolor = "transparent",
+  font = font
+)
+
+ggplotly(p, tooltip = c("text")) %>%
+  config(displayModeBar = FALSE) %>%
+  style(hoverlabel = label) %>%
+  layout(font = font,
+         yaxis = list(fixedrange = TRUE),
+         xaxis = list(fixedrange = TRUE))
+```
+
+
+
+# Topic Modeling
+
+##### Comparison of the topics of the texts
+LDA algorithm finds the nine highest per-topic-per-word probabilities, called “beta”. This is an unsupervised method thus that each founded topic has not a label. Recall the colors of <span style="color: #F8766D;">text_1</span>, <span style="color: #00BFC4;">text_2</span> and <span style="color: #7A5C58;">text_3</span>. \n
+
+```{r topic_modelling_versus, echo=FALSE,  include=FALSE, collapse=TRUE, warning=FALSE}
+word_counts <- dataset_unnested %>%
+  count(book, word, sort = TRUE) %>%
+  ungroup()
+
+text_n_dtm <- word_counts %>%
+  cast_dtm(book, word, n)
+
+colors <- c("#F8766D", "#7A5C58", "#F8766D", "#7A5C58", "#00BFC4", "#F8766D", "#00BFC4", "#00BFC4", "#7A5C58")
+
+text_n_lda <- LDA(text_n_dtm, k = 9, control = list(seed = 1234)) # k = n topics 
+
+text_n_topics_beta <- tidy(text_n_lda, matrix = "beta")
+```
+```{r topic_modelling_versus_plot, echo=FALSE,   collapse=TRUE, warning=FALSE}
+top_terms <- text_n_topics_beta %>%
+  mutate(word = term, term = reorder_within(term, beta, topic)) %>%
+  arrange(desc(beta)) %>%
+  group_by(topic) %>%
+  slice(1:6) 
+
+top_terms %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  labs(title = "", x = "Terms\n", y = expression(beta)) + 
+  theme(axis.text.y = element_blank(), axis.ticks = element_blank()) +
+  scale_x_reordered(sep = "___") +
+  scale_fill_manual(values = colors) +
+  coord_flip() +
+  theme_classic()
+```
+
+
+##### Linking topics with texts
+In order to label the topics we use the per-document-per-topic probabilities, called “gamma”. \n
+
+```{r topic_modelling_versus_boxplot, echo=FALSE,   collapse=TRUE, warning=FALSE}
+text_n_topics_gamma <- tidy(text_n_lda, matrix = "gamma")
+
+chapters_gamma <- text_n_topics_gamma %>%
+  separate(document, c("title"), sep = "_", convert = TRUE)
+
+chapters_gamma %>%
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() +
+  facet_wrap(~ title) +
+  labs(x = "topic", y = expression(gamma)) +
+  theme_classic()
+```
+
